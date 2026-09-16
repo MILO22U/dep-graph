@@ -1,0 +1,660 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Toolkit Dependency Graph</title>
+<style>
+  .viz-root {
+    color-scheme: light;
+    --surface-1: #fcfcfb;
+    --surface-2: #f2f2f0;
+    --border:    #dcdcd8;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #7c7b76;
+    --series-1: #2a78d6;  /* entry point  */
+    --series-2: #eb6834;  /* intermediate */
+    --series-3: #1baf7a;  /* terminal     */
+    --neutral:  #a9a8a2;  /* unconnected  */
+    --edge:     #c9c8c3;
+    --edge-hot: #0b0b0b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --surface-1: #1a1a19;
+      --surface-2: #242423;
+      --border:    #3a3a38;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #8e8d85;
+      --series-1: #3987e5;
+      --series-2: #d95926;
+      --series-3: #199e70;
+      --neutral:  #6a6963;
+      --edge:     #3f3f3c;
+      --edge-hot: #ffffff;
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --surface-2: #242423;
+    --border:    #3a3a38;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #8e8d85;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --neutral:  #6a6963;
+    --edge:     #3f3f3c;
+    --edge-hot: #ffffff;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--surface-1);
+    color: var(--text-primary);
+  }
+  .viz-root { display: flex; flex-direction: column; height: 100vh; overflow: hidden; background: var(--surface-1); }
+
+  header { padding: 14px 16px 10px; border-bottom: 1px solid var(--border); }
+  h1 { margin: 0 0 2px; font-size: 16px; font-weight: 650; letter-spacing: -0.01em; }
+  .sub { margin: 0; color: var(--text-secondary); font-size: 12.5px; }
+  .sub b { color: var(--text-primary); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  /* filters: one row above the chart */
+  .filters { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
+  .filters label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
+  select, input[type="search"] {
+    font: inherit; font-size: 12.5px; padding: 4px 7px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--surface-1); color: var(--text-primary);
+  }
+  input[type="search"] { width: 168px; }
+  input[type="range"] { width: 88px; accent-color: var(--series-1); }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .seg button { font: inherit; font-size: 12.5px; padding: 4px 10px; border: 0; background: var(--surface-1); color: var(--text-secondary); cursor: pointer; }
+  .seg button[aria-pressed="true"] { background: var(--text-primary); color: var(--surface-1); }
+  .count { margin-left: auto; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+  main { flex: 1; display: flex; min-height: 0; }
+  .stage-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .stage { position: relative; flex: 1; min-height: 180px; }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  /* Legend: always present, with text labels (relief for the light-mode contrast
+     warn). A strip under the canvas rather than an overlay, so it can never
+     cover the plot or the controls at a narrow width. */
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 8px 16px;
+            border-top: 1px solid var(--border); background: var(--surface-2); }
+  .legend .row { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--text-secondary); }
+  .legend .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .legend .row b { color: var(--text-primary); font-weight: 600; }
+
+  .tip { position: absolute; pointer-events: none; opacity: 0; transition: opacity .1s;
+         max-width: 330px; padding: 7px 9px; border-radius: 7px; font-size: 12px;
+         background: var(--text-primary); color: var(--surface-1); box-shadow: 0 3px 12px rgba(0,0,0,.22); }
+  .tip .t { font-weight: 600; word-break: break-all; }
+  .tip .m { opacity: .75; margin-top: 2px; }
+
+  aside { width: 336px; flex: none; border-left: 1px solid var(--border); overflow-y: auto; padding: 14px 16px; background: var(--surface-1); }
+  aside h2 { margin: 0 0 3px; font-size: 13px; font-weight: 650; word-break: break-all; }
+  aside .svc { color: var(--text-muted); font-size: 11.5px; margin-bottom: 12px; }
+  aside h3 { margin: 16px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); font-weight: 600; }
+  .dep { padding: 6px 0; border-top: 1px solid var(--border); font-size: 12px; }
+  .dep .lb { display: inline-block; padding: 1px 6px; border-radius: 4px; background: var(--surface-2);
+             font: 600 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-primary); }
+  .dep .sl { display: block; color: var(--text-secondary); word-break: break-all; margin-top: 2px; }
+  .dep .cf { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+  .ask { display: inline-block; margin: 0 4px 4px 0; padding: 2px 7px; border-radius: 4px;
+         border: 1px dashed var(--border); font: 600 11px/1.5 ui-monospace, Menlo, monospace; color: var(--text-secondary); }
+  .empty { color: var(--text-muted); font-size: 12px; font-style: italic; }
+
+  /* table view: the accessible parallel to the canvas */
+  .table-wrap { flex: 1; min-width: 0; overflow: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  th, td { text-align: left; padding: 6px 12px; border-bottom: 1px solid var(--border); }
+  th { position: sticky; top: 0; background: var(--surface-2); font-size: 11px; text-transform: uppercase;
+       letter-spacing: .06em; color: var(--text-muted); font-weight: 600; }
+  td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+  td.num { font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+  .hidden { display: none !important; }
+
+  /* Narrow: the 336px panel would starve the plot, so stack it underneath. */
+  @media (max-width: 960px) {
+    main { flex-direction: column; }
+    aside { width: auto; border-left: 0; border-top: 1px solid var(--border); max-height: 42vh; }
+    .stage { min-height: 260px; }
+  }
+  @media (max-width: 620px) {
+    .filters { gap: 6px 10px; }
+    input[type="search"] { width: 140px; }
+    .count { margin-left: 0; width: 100%; }
+  }
+</style>
+</head>
+<body>
+<div class="viz-root">
+  <header>
+    <h1>Toolkit Dependency Graph</h1>
+    <p class="sub">An arrow <b>A &rarr; B</b> means A returns a value that B requires, so A must run first. Labelled with the field it supplies.</p>
+  </header>
+
+  <div class="filters">
+    <div class="seg">
+      <button id="view-graph" aria-pressed="true">Graph</button>
+      <button id="view-table" aria-pressed="false">Table</button>
+    </div>
+    <label>Service <select id="f-service"></select></label>
+    <label>Dependency <select id="f-label"></select></label>
+    <label>Min conf. <input type="range" id="f-conf" min="0" max="1" step="0.05" value="0"><span id="conf-out" class="num">0.00</span></label>
+    <label><input type="checkbox" id="f-iso"> Show unconnected</label>
+    <label><input type="search" id="f-search" placeholder="Find a tool..." autocomplete="off"></label>
+    <span class="count" id="count"></span>
+  </div>
+
+  <main>
+    <div class="stage-wrap" id="stage-wrap">
+      <div class="stage" id="stage">
+        <canvas id="cv"></canvas>
+        <div class="tip" id="tip"></div>
+      </div>
+      <div class="legend">
+        <div class="row"><span class="dot" style="background:var(--series-1)"></span><b>Entry point</b> &mdash; supplies ids, needs none</div>
+        <div class="row"><span class="dot" style="background:var(--series-2)"></span><b>Intermediate</b> &mdash; needs and supplies</div>
+        <div class="row"><span class="dot" style="background:var(--series-3)"></span><b>Terminal</b> &mdash; needs ids only</div>
+        <div class="row"><span class="dot" style="background:var(--neutral)"></span><b>Unconnected</b></div>
+      </div>
+    </div>
+    <div class="table-wrap hidden" id="table-wrap">
+      <table>
+        <thead><tr><th>Run first (producer)</th><th>Supplies</th><th>Then (consumer)</th><th>Conf.</th></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+    <aside id="panel"></aside>
+  </main>
+</div>
+
+<script id="graph-data" type="application/json">__GRAPH_DATA__</script>
+<script>
+(function () {
+  "use strict";
+  var GRAPH = JSON.parse(document.getElementById("graph-data").textContent);
+  var NODES = GRAPH.nodes || [];
+  var EDGES = (GRAPH.edges || []).filter(function (e) { return e.from && e.to; });
+
+  var index = new Map();
+  NODES.forEach(function (n, i) { index.set(n.id, i); });
+  EDGES = EDGES.filter(function (e) { return index.has(e.from) && index.has(e.to); });
+
+  // degree -> role
+  var inDeg = new Array(NODES.length).fill(0);
+  var outDeg = new Array(NODES.length).fill(0);
+  EDGES.forEach(function (e) { outDeg[index.get(e.from)]++; inDeg[index.get(e.to)]++; });
+
+  var ROLE = NODES.map(function (n, i) {
+    if (inDeg[i] === 0 && outDeg[i] === 0) return 3;       // unconnected
+    if (inDeg[i] === 0) return 0;                          // entry point
+    if (outDeg[i] === 0) return 2;                          // terminal
+    return 1;                                               // intermediate
+  });
+  var ROLE_VAR = ["--series-1", "--series-2", "--series-3", "--neutral"];
+
+  var adjacency = NODES.map(function () { return []; });
+  EDGES.forEach(function (e, k) {
+    adjacency[index.get(e.from)].push(k);
+    adjacency[index.get(e.to)].push(k);
+  });
+
+  // ---- controls ----------------------------------------------------------
+  var el = function (id) { return document.getElementById(id); };
+  var fService = el("f-service"), fLabel = el("f-label"), fConf = el("f-conf"),
+      fIso = el("f-iso"), fSearch = el("f-search"), confOut = el("conf-out"),
+      countEl = el("count"), panel = el("panel"), tip = el("tip"),
+      canvas = el("cv"), stage = el("stage"), stageWrap = el("stage-wrap"), tbody = el("tbody"),
+      tableWrap = el("table-wrap"), btnGraph = el("view-graph"), btnTable = el("view-table");
+
+  function fillSelect(sel, values, allLabel) {
+    var opts = ['<option value="">' + allLabel + "</option>"];
+    values.forEach(function (v) {
+      opts.push('<option value="' + v[0] + '">' + v[0] + " (" + v[1] + ")</option>");
+    });
+    sel.innerHTML = opts.join("");
+  }
+  function tally(items, key) {
+    var m = new Map();
+    items.forEach(function (it) {
+      var v = it[key];
+      if (v) m.set(v, (m.get(v) || 0) + 1);
+    });
+    return Array.from(m.entries()).sort(function (a, b) { return b[1] - a[1] || String(a[0]).localeCompare(String(b[0])); });
+  }
+  fillSelect(fService, tally(NODES, "service"), "All services");
+  fillSelect(fLabel, tally(EDGES, "label"), "All dependencies");
+
+  var state = { service: "", label: "", conf: 0, iso: false, q: "", sel: -1, view: "graph" };
+
+  // ---- what is visible ---------------------------------------------------
+  var visNode = new Uint8Array(NODES.length);
+  var visEdge = new Uint8Array(EDGES.length);
+  var live = [];
+
+  function recompute() {
+    var q = state.q.toLowerCase();
+    for (var i = 0; i < NODES.length; i++) {
+      var n = NODES[i];
+      var ok = true;
+      if (state.service && n.service !== state.service) ok = false;
+      if (ok && q && n.id.toLowerCase().indexOf(q) === -1) ok = false;
+      visNode[i] = ok ? 1 : 0;
+    }
+    for (var k = 0; k < EDGES.length; k++) {
+      var e = EDGES[k];
+      var a = index.get(e.from), b = index.get(e.to);
+      var ok2 = (e.confidence == null ? 1 : e.confidence) >= state.conf - 1e-9;
+      if (ok2 && state.label && e.label !== state.label) ok2 = false;
+      // an edge survives if either endpoint passes the node filters, and we then
+      // re-admit the other endpoint so no arrow dangles
+      if (ok2 && !(visNode[a] || visNode[b])) ok2 = false;
+      visEdge[k] = ok2 ? 1 : 0;
+      if (ok2) { visNode[a] = 1; visNode[b] = 1; }
+    }
+    // drop unconnected nodes unless asked for (or explicitly searched)
+    if (!state.iso) {
+      var touched = new Uint8Array(NODES.length);
+      for (var k2 = 0; k2 < EDGES.length; k2++) {
+        if (!visEdge[k2]) continue;
+        touched[index.get(EDGES[k2].from)] = 1;
+        touched[index.get(EDGES[k2].to)] = 1;
+      }
+      for (var j = 0; j < NODES.length; j++) if (!touched[j]) visNode[j] = 0;
+    }
+    live = [];
+    for (var m = 0; m < NODES.length; m++) if (visNode[m]) live.push(m);
+
+    var ec = 0;
+    for (var p = 0; p < EDGES.length; p++) if (visEdge[p]) ec++;
+    countEl.textContent = live.length.toLocaleString() + " of " + NODES.length.toLocaleString() +
+      " tools · " + ec.toLocaleString() + " of " + EDGES.length.toLocaleString() + " dependencies";
+    layout();
+    renderTable();
+  }
+
+  // ---- layout: cluster by service, then relax -----------------------------
+  var pos = new Float32Array(NODES.length * 2);
+  var vel = new Float32Array(NODES.length * 2);
+  var W = 800, H = 600, ticks = 0, maxTicks = 0, raf = 0;
+
+  function layout() {
+    var n = live.length;
+    if (!n) { ticks = maxTicks = 0; draw(); return; }
+    // seed: one island per service around a circle, so the first frame already
+    // has structure and the relaxation only has local work to do
+    var groups = new Map();
+    live.forEach(function (i) {
+      var s = NODES[i].service || "~";
+      if (!groups.has(s)) groups.set(s, []);
+      groups.get(s).push(i);
+    });
+    var keys = Array.from(groups.keys()).sort();
+    var R = Math.min(W, H) * 0.3;
+    keys.forEach(function (key, gi) {
+      var members = groups.get(key);
+      var a = (gi / keys.length) * Math.PI * 2;
+      var cx = W / 2 + Math.cos(a) * R * (keys.length > 1 ? 1 : 0);
+      var cy = H / 2 + Math.sin(a) * R * (keys.length > 1 ? 1 : 0);
+      var rr = Math.max(10, Math.sqrt(members.length) * 6);
+      members.forEach(function (i, mi) {
+        var t = mi * 2.39996; // golden angle: an even disc, no spokes
+        var spiral = rr * Math.sqrt((mi + 0.5) / members.length);
+        pos[i * 2] = cx + Math.cos(t) * spiral;
+        pos[i * 2 + 1] = cy + Math.sin(t) * spiral;
+        vel[i * 2] = vel[i * 2 + 1] = 0;
+      });
+    });
+    ticks = 0;
+    maxTicks = n <= 150 ? 300 : n <= 450 ? 220 : 160;
+    cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(step);
+  }
+
+  function step() {
+    var budget = performance.now() + 12;
+    while (ticks < maxTicks && performance.now() < budget) { tick(); ticks++; }
+    draw();
+    if (ticks < maxTicks) raf = requestAnimationFrame(step);
+  }
+
+  /**
+   * One Fruchterman-Reingold iteration.
+   *
+   * FR rather than hand-tuned springs because its ideal separation k is derived
+   * from area/n, so the same constants behave whether 40 nodes or 900 are on
+   * screen, and the cooling schedule settles instead of oscillating. Repulsion
+   * is evaluated over a uniform grid and cut off at 2k, which keeps a tick
+   * near-linear instead of O(n^2).
+   */
+  function tick() {
+    var n = live.length;
+    var k = Math.sqrt((W * H) / n) * 0.72; // ideal separation
+    var cutoff = k * 2;
+    var cell = cutoff;
+    var cols = Math.ceil(W / cell) + 3;
+    var buckets = new Map();
+    var cellOf = function (i) {
+      var cxi = Math.floor(pos[i * 2] / cell) + 1;
+      var cyi = Math.floor(pos[i * 2 + 1] / cell) + 1;
+      return cyi * cols + cxi;
+    };
+    for (var a = 0; a < n; a++) {
+      var key = cellOf(live[a]);
+      if (!buckets.has(key)) buckets.set(key, []);
+      buckets.get(key).push(live[a]);
+    }
+
+    for (var b = 0; b < n; b++) {
+      var u = live[b];
+      var ux = pos[u * 2], uy = pos[u * 2 + 1];
+      var cx0 = Math.floor(ux / cell) + 1, cy0 = Math.floor(uy / cell) + 1;
+      var fx = 0, fy = 0;
+      for (var dx = -1; dx <= 1; dx++) {
+        for (var dy = -1; dy <= 1; dy++) {
+          var arr = buckets.get((cy0 + dy) * cols + (cx0 + dx));
+          if (!arr) continue;
+          for (var z = 0; z < arr.length; z++) {
+            var v = arr[z];
+            if (v === u) continue;
+            var ddx = ux - pos[v * 2], ddy = uy - pos[v * 2 + 1];
+            var d = Math.sqrt(ddx * ddx + ddy * ddy);
+            if (d < 0.01) { ddx = Math.random() - 0.5; ddy = Math.random() - 0.5; d = 0.5; }
+            if (d > cutoff) continue;
+            var rep = (k * k) / d; // FR repulsion
+            fx += (ddx / d) * rep;
+            fy += (ddy / d) * rep;
+          }
+        }
+      }
+      // gravity: holds detached components in frame without pinning them to it
+      fx += (W / 2 - ux) * 0.035;
+      fy += (H / 2 - uy) * 0.035;
+      vel[u * 2] = fx;
+      vel[u * 2 + 1] = fy;
+    }
+
+    for (var e = 0; e < EDGES.length; e++) {
+      if (!visEdge[e]) continue;
+      var s = index.get(EDGES[e].from), t2 = index.get(EDGES[e].to);
+      if (!visNode[s] || !visNode[t2]) continue;
+      var ex = pos[t2 * 2] - pos[s * 2], ey = pos[t2 * 2 + 1] - pos[s * 2 + 1];
+      var dist = Math.sqrt(ex * ex + ey * ey);
+      if (dist < 0.01) continue;
+      var att = (dist * dist) / k / 2; // FR attraction, halved: each end gets one
+      var nx = (ex / dist) * att, ny = (ey / dist) * att;
+      vel[s * 2] += nx; vel[s * 2 + 1] += ny;
+      vel[t2 * 2] -= nx; vel[t2 * 2 + 1] -= ny;
+    }
+
+    // displacement capped by the cooling temperature
+    var temp = Math.max(0.6, Math.min(W, H) * 0.06 * (1 - ticks / maxTicks));
+    for (var c = 0; c < n; c++) {
+      var w = live[c];
+      var vx = vel[w * 2], vy = vel[w * 2 + 1];
+      var mag = Math.sqrt(vx * vx + vy * vy);
+      if (mag > 1e-6) {
+        var scale = Math.min(mag, temp) / mag;
+        pos[w * 2] += vx * scale;
+        pos[w * 2 + 1] += vy * scale;
+      }
+      var pad = 14;
+      pos[w * 2] = Math.min(W - pad, Math.max(pad, pos[w * 2]));
+      pos[w * 2 + 1] = Math.min(H - pad, Math.max(pad, pos[w * 2 + 1]));
+    }
+  }
+
+  // ---- draw --------------------------------------------------------------
+  var ctx = canvas.getContext("2d");
+  var dpr = Math.min(2, window.devicePixelRatio || 1);
+  var css = function (name) { return getComputedStyle(document.querySelector(".viz-root")).getPropertyValue(name).trim(); };
+  var hover = -1;
+
+  function resize() {
+    var r = stage.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return; // hidden: keep the last good size
+    var w = Math.max(320, Math.round(r.width));
+    var h = Math.max(240, Math.round(r.height));
+    if (w === W && h === H && canvas.width) return;
+    W = w; H = h;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    layout();
+  }
+  // A window resize listener misses the cases that actually change the plot box:
+  // the panel restacking at a breakpoint, or the page being laid out while its
+  // container is still zero-width. Observe the element itself.
+  if (typeof ResizeObserver === "function") {
+    new ResizeObserver(function () { resize(); }).observe(stage);
+  } else {
+    window.addEventListener("resize", resize);
+  }
+
+  function radiusOf(i) { return 3 + Math.min(7, Math.sqrt(inDeg[i] + outDeg[i]) * 1.5); }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    var focus = state.sel >= 0 ? state.sel : hover;
+    var hot = new Set();
+    if (focus >= 0) adjacency[focus].forEach(function (k) { if (visEdge[k]) hot.add(k); });
+
+    // edges first, 2px, recessive
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = css("--edge");
+    ctx.globalAlpha = focus >= 0 ? 0.3 : 0.62;
+    ctx.beginPath();
+    for (var k = 0; k < EDGES.length; k++) {
+      if (!visEdge[k] || hot.has(k)) continue;
+      var s = index.get(EDGES[k].from), t = index.get(EDGES[k].to);
+      if (!visNode[s] || !visNode[t]) continue;
+      ctx.moveTo(pos[s * 2], pos[s * 2 + 1]);
+      ctx.lineTo(pos[t * 2], pos[t * 2 + 1]);
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    if (hot.size) {
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = css("--edge-hot");
+      hot.forEach(function (k) {
+        var s = index.get(EDGES[k].from), t = index.get(EDGES[k].to);
+        var sx = pos[s * 2], sy = pos[s * 2 + 1], tx = pos[t * 2], ty = pos[t * 2 + 1];
+        ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(tx, ty); ctx.stroke();
+        // direction arrowhead, stopped short of the target node
+        var ang = Math.atan2(ty - sy, tx - sx), r = radiusOf(t) + 2;
+        var ax = tx - Math.cos(ang) * r, ay = ty - Math.sin(ang) * r;
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(ax - Math.cos(ang - 0.4) * 8, ay - Math.sin(ang - 0.4) * 8);
+        ctx.lineTo(ax - Math.cos(ang + 0.4) * 8, ay - Math.sin(ang + 0.4) * 8);
+        ctx.closePath();
+        ctx.fillStyle = css("--edge-hot");
+        ctx.fill();
+      });
+    }
+
+    // nodes, with a 2px surface ring so overlaps stay countable
+    var ring = css("--surface-1");
+    for (var a = 0; a < live.length; a++) {
+      var i = live[a];
+      var dim = focus >= 0 && i !== focus && !isNeighbour(i, focus);
+      ctx.globalAlpha = dim ? 0.28 : 1;
+      ctx.beginPath();
+      ctx.arc(pos[i * 2], pos[i * 2 + 1], radiusOf(i), 0, Math.PI * 2);
+      ctx.fillStyle = css(ROLE_VAR[ROLE[i]]);
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = ring;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+
+    if (focus >= 0 && visNode[focus]) {
+      ctx.beginPath();
+      ctx.arc(pos[focus * 2], pos[focus * 2 + 1], radiusOf(focus) + 4, 0, Math.PI * 2);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = css("--text-primary");
+      ctx.stroke();
+      // direct label on the focused node
+      var name = NODES[focus].id;
+      ctx.font = "600 11px ui-sans-serif, system-ui, sans-serif";
+      var tw = ctx.measureText(name).width;
+      var lx = Math.min(W - tw - 10, Math.max(6, pos[focus * 2] - tw / 2));
+      var ly = Math.max(16, pos[focus * 2 + 1] - radiusOf(focus) - 9);
+      ctx.fillStyle = css("--surface-1");
+      ctx.fillRect(lx - 3, ly - 11, tw + 6, 15);
+      ctx.fillStyle = css("--text-primary");
+      ctx.fillText(name, lx, ly);
+    }
+  }
+
+  function isNeighbour(i, f) {
+    var list = adjacency[f];
+    for (var z = 0; z < list.length; z++) {
+      if (!visEdge[list[z]]) continue;
+      var e = EDGES[list[z]];
+      if (index.get(e.from) === i || index.get(e.to) === i) return true;
+    }
+    return false;
+  }
+
+  // ---- hit testing, tooltip, selection -----------------------------------
+  function nodeAt(mx, my) {
+    var best = -1, bestD = 14 * 14;
+    for (var a = 0; a < live.length; a++) {
+      var i = live[a];
+      var dx = pos[i * 2] - mx, dy = pos[i * 2 + 1] - my;
+      var d = dx * dx + dy * dy;
+      var r = radiusOf(i) + 6;
+      if (d < Math.max(bestD, r * r) && d < r * r) { best = i; bestD = d; }
+    }
+    return best;
+  }
+
+  canvas.addEventListener("mousemove", function (ev) {
+    var r = canvas.getBoundingClientRect();
+    var mx = ev.clientX - r.left, my = ev.clientY - r.top;
+    var hit = nodeAt(mx, my);
+    if (hit !== hover) { hover = hit; draw(); }
+    if (hit >= 0) {
+      var n = NODES[hit];
+      tip.innerHTML = '<div class="t">' + n.id + '</div><div class="m">' +
+        (n.service ? n.service + " · " : "") +
+        outDeg[hit] + " supplied · " + inDeg[hit] + " needed</div>";
+      tip.style.opacity = "1";
+      var tw = tip.offsetWidth, th = tip.offsetHeight;
+      tip.style.left = Math.min(W - tw - 8, Math.max(8, mx + 14)) + "px";
+      tip.style.top = Math.max(8, my - th - 12) + "px";
+      canvas.style.cursor = "pointer";
+    } else {
+      tip.style.opacity = "0";
+      canvas.style.cursor = "default";
+    }
+  });
+  canvas.addEventListener("mouseleave", function () { tip.style.opacity = "0"; hover = -1; draw(); });
+  canvas.addEventListener("click", function (ev) {
+    var r = canvas.getBoundingClientRect();
+    var hit = nodeAt(ev.clientX - r.left, ev.clientY - r.top);
+    select(hit);
+  });
+
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]; }); }
+
+  function select(i) {
+    state.sel = i;
+    draw();
+    if (i < 0) { renderPanelEmpty(); return; }
+    var n = NODES[i];
+    var incoming = [], outgoing = [];
+    adjacency[i].forEach(function (k) {
+      if (!visEdge[k]) return;
+      var e = EDGES[k];
+      if (index.get(e.to) === i) incoming.push(e); else outgoing.push(e);
+    });
+    var html = "<h2>" + esc(n.id) + "</h2>";
+    html += '<div class="svc">' + esc(n.service || "no service tag") + " · " +
+            ["entry point", "intermediate", "terminal", "unconnected"][ROLE[i]] + "</div>";
+
+    html += "<h3>Run these first (" + incoming.length + ")</h3>";
+    html += incoming.length
+      ? incoming.map(function (e) {
+          return '<div class="dep"><span class="lb">' + esc(e.label || "?") + '</span> <span class="cf">' +
+            (e.confidence != null ? e.confidence.toFixed(2) : "") + '</span><span class="sl">' + esc(e.from) + "</span></div>";
+        }).join("")
+      : '<p class="empty">Nothing &mdash; no other tool is needed first.</p>';
+
+    if (n.requires_from_user && n.requires_from_user.length) {
+      html += "<h3>Ask the user for</h3>" +
+        n.requires_from_user.map(function (p) { return '<span class="ask">' + esc(p) + "</span>"; }).join("");
+    }
+
+    html += "<h3>Unlocks these (" + outgoing.length + ")</h3>";
+    html += outgoing.length
+      ? outgoing.slice(0, 40).map(function (e) {
+          return '<div class="dep"><span class="lb">' + esc(e.label || "?") + '</span> <span class="cf">' +
+            (e.confidence != null ? e.confidence.toFixed(2) : "") + '</span><span class="sl">' + esc(e.to) + "</span></div>";
+        }).join("")
+      : '<p class="empty">Nothing downstream depends on its output.</p>';
+    if (outgoing.length > 40) html += '<p class="empty">+' + (outgoing.length - 40) + " more</p>";
+
+    panel.innerHTML = html;
+  }
+
+  function renderPanelEmpty() {
+    panel.innerHTML = '<h2>Pick a tool</h2><div class="svc">Click any node, or search above.</div>' +
+      '<p class="empty">Its panel lists what has to run before it, what it needs from the user, ' +
+      'and what it makes possible afterwards.</p>';
+  }
+
+  function renderTable() {
+    var rows = [];
+    for (var k = 0; k < EDGES.length && rows.length < 1200; k++) {
+      if (!visEdge[k]) continue;
+      var e = EDGES[k];
+      rows.push("<tr><td class='mono'>" + esc(e.from) + "</td><td class='mono'>" + esc(e.label || "") +
+        "</td><td class='mono'>" + esc(e.to) + "</td><td class='num'>" +
+        (e.confidence != null ? e.confidence.toFixed(2) : "") + "</td></tr>");
+    }
+    tbody.innerHTML = rows.join("") || "<tr><td colspan='4' class='empty'>No dependencies match these filters.</td></tr>";
+  }
+
+  // ---- wiring ------------------------------------------------------------
+  fService.addEventListener("change", function () { state.service = fService.value; state.sel = -1; renderPanelEmpty(); recompute(); });
+  fLabel.addEventListener("change", function () { state.label = fLabel.value; state.sel = -1; renderPanelEmpty(); recompute(); });
+  fConf.addEventListener("input", function () { state.conf = Number(fConf.value); confOut.textContent = state.conf.toFixed(2); recompute(); });
+  fIso.addEventListener("change", function () { state.iso = fIso.checked; recompute(); });
+  var debounce;
+  fSearch.addEventListener("input", function () {
+    clearTimeout(debounce);
+    debounce = setTimeout(function () { state.q = fSearch.value.trim(); recompute(); }, 160);
+  });
+  function setView(v) {
+    state.view = v;
+    btnGraph.setAttribute("aria-pressed", String(v === "graph"));
+    btnTable.setAttribute("aria-pressed", String(v === "table"));
+    stageWrap.classList.toggle("hidden", v !== "graph");
+    tableWrap.classList.toggle("hidden", v !== "table");
+    if (v === "graph") resize();
+  }
+  btnGraph.addEventListener("click", function () { setView("graph"); });
+  btnTable.addEventListener("click", function () { setView("table"); });
+
+  renderPanelEmpty();
+  recompute();
+  resize();
+})();
+</script>
+</body>
+</html>
