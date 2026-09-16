@@ -7,21 +7,31 @@ the limits** — start there.
 ```bash
 npm install --legacy-peer-deps
 node --import tsx src/generate.ts github_catalog.json   # -> dependency_graph.json
-npm run selfcheck                                       # shape + provenance report
+npm test                                                # 110 tests
+npm run evaluate                                        # precision vs a labelled set
 npm run visualize                                       # -> graph.html
+npm run selfcheck                                       # the provided shape check
 ```
 
 | | |
 |---|---|
-| generator | [src/generate.ts](src/generate.ts) |
-| approach + limits | [APPROACH.md](APPROACH.md) |
+| inference | [src/infer.ts](src/infer.ts) — pure, no I/O |
+| cli entrypoint | [src/generate.ts](src/generate.ts) |
+| approach, measurements, limits | [APPROACH.md](APPROACH.md) |
+| tests | [infer.test.ts](src/infer.test.ts), [graph.test.ts](src/graph.test.ts), [catalog.test.ts](src/catalog.test.ts) |
+| evaluation | [src/evaluate.ts](src/evaluate.ts), labels in [eval/labels.json](eval/labels.json) |
 | visualization | [graph.html](graph.html) — committed, self-contained, open directly |
 | catalog used | [github_catalog.json](github_catalog.json) |
 | run command | declared in [generator.json](generator.json) |
 
-on the provided GitHub catalog: **893 nodes, 1,863 labelled edges**, all node ids
-real catalog slugs. both worked examples below are present. verified to generalise
-by re-running on a renamed fake toolkit — see APPROACH.md.
+on the provided GitHub catalog: **893 nodes, 1,755 labelled edges**, all node ids
+real catalog slugs, both worked examples below present.
+
+measured rather than eyeballed: **72% precision at 100% recall** against a
+hand-labelled sample of 26 edges — up from 52% on the first measured run — plus 8
+structural invariants and per-label coverage floors. generalisation is asserted by
+tests that rename every slug and entity and re-run. what is still wrong, and why,
+is written up honestly in APPROACH.md.
 
 ---
 

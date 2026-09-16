@@ -6,7 +6,10 @@
     "generate": "node --import tsx src/generate.ts",
     "selfcheck": "node --import tsx src/selfcheck.ts",
     "visualize": "node --import tsx src/visualize.ts",
-    "build": "node --import tsx src/generate.ts github_catalog.json && node --import tsx src/visualize.ts"
+    "build": "node --import tsx src/generate.ts github_catalog.json && node --import tsx src/visualize.ts",
+    "test": "node --import tsx --test src/infer.test.ts src/graph.test.ts src/catalog.test.ts",
+    "evaluate": "node --import tsx src/evaluate.ts",
+    "check": "npm run generate -- github_catalog.json && npm test && npm run evaluate"
   },
   "dependencies": {
     "openai": "^6.48.0"

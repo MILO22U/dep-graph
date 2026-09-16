@@ -91,8 +91,18 @@ only bare nouns can be ambient.
 
 **Enums and payloads are never dependencies.** `state`, `visibility` and
 `package_type` are fixed choices the caller picks. `files` on `CREATE_A_GIST` is
-an object of file content the caller composes. Neither is a handle to fetch, so
-params with an `enum`, and params of type `object`, are excluded.
+a map of file content the caller composes. Neither is a handle to fetch. Excluded
+are params declaring an `enum`, params of type `object` or `array`, and **plural
+bare nouns** — `files` is typed `string` because Composio flattens the object to
+JSON, so only the plural gives it away.
+
+**A bare noun must come from a tool about that noun.** A requirement like
+`branch` ("anything identifying a branch") is the loosest kind, so the producer
+has to be *about* branches and has to be a retrieval tool. Without the first
+half, `content` on `CREATE_A_BLOB` matched a coincidental `Content` entity in
+project items; without the second, `assignee` was sourced from
+`ADD_ASSIGNEES_TO_AN_ISSUE` — a mutation you would already need the answer to
+call.
 
 ## Does it work?
 
@@ -103,26 +113,123 @@ GITHUB_LIST_REPOSITORY_ISSUES --issue_number--> GITHUB_CREATE_AN_ISSUE_COMMENT
 GITHUB_LIST_PULL_REQUESTS     --pull_number --> GITHUB_MERGE_A_PULL_REQUEST
 ```
 
-On `github_catalog.json`: **893 nodes, 1,863 edges**, every node id a real
-catalog slug, every edge labelled, max fan-in 10 (no hairball hubs).
+On `github_catalog.json`: **893 nodes, 1,755 labelled edges**, every node id a
+real catalog slug, max 3 producers per requirement (no hairball hubs).
 
-**Generalisation.** The requirement is that the graph comes from the catalog, not
-from hardcoded knowledge. Tested by building a fake toolkit — the issues/PR tools
-with slugs renamed `GITHUB_*` → `ACME_*`, `Issue` → `Ticket`,
-`PullRequest` → `Changeset` — and re-running. It discovers 75 `ticket_number` and
-72 `changeset_number` edges, with no `GITHUB_` slug leaking through. This is what
-caught the ambient-frequency bug above.
+### Measured, not eyeballed
+
+`npm run evaluate` reports three things. The number that matters is the first.
+
+**A hand-labelled sample** (`eval/labels.json`) — 26 edges, 13 judged real and 13
+judged spurious, each verdict made by reading both tools' schemas and each
+carrying its reason. Current score:
+
+| | |
+|---|---|
+| precision | **72.2%** (13 of 18 emitted edges are real) |
+| recall | **100%** (all 13 real edges found) |
+| correctly rejected | 8 of 13 spurious edges |
+
+The first run of this scored **52%**. Eyeballing a sample of edges had made the
+graph look fine; measuring it did not. Four rules came directly out of the
+failure list, and each is documented at its definition:
+
+1. **No partial entity credit.** A requirement naming two things means both. Half
+   credit had offered a runner *label* id for `runner_group_id`, and a custom
+   organization *role* name for `custom_property_name`.
+2. **No wide-gap abbreviations.** The rule that resolved `repo`→`repository` also
+   resolved `code`→`codespace`, sourcing a GitHub App manifest `code` from a
+   codespace export.
+3. **Slug-subject fallback must be tight.** `GET_A_PACKAGE_VERSION_FOR_THE_AUTHENTICATED_USER`
+   has subject `[package, version, authenticated, user]`, so a `username`
+   requirement matched on one stray token and took `data.name` — the package
+   version's name, not a login.
+4. **Plural bare nouns are payloads.** `files` on `CREATE_A_GIST` is typed
+   `string` (Composio flattens the object to JSON), so the type check missed it
+   and gist file contents were being "fetched" from pull-request file shas.
+
+**Structural checks** — properties that must hold for an agent to use the graph:
+every label is genuinely a required input of the consumer, every producer really
+exposes a field for it, no producer requires the very thing it supplies, fan-in
+bounded. All pass.
+
+**Coverage** — 626 of 893 tools appear in the graph; 88.8% of id-shaped
+requirements have at least one producer. The largest remaining gaps are `ref`
+(17), `sha` (6) and `thread_id` (6), all cases where no tool returns the value
+under a recognisable entity.
+
+### The overfitting trap, which I walked into
+
+Tightening token containment from a 3-character gap to 2 raised sample precision
+to 76.5% — and silently deleted **all 57 `hook_id` edges**, because "hook" sits
+inside "webhook" with a gap of exactly 3. Sample precision improved while the
+graph got worse.
+
+It is reverted, with the reason at the call site. Two things came out of it: 26
+labels are far too few to tune against, and `src/catalog.test.ts` now asserts
+**coverage floors** per dependency label, so deleting a whole class of real edges
+fails the suite loudly instead of looking like progress.
+
+### Generalisation
+
+The requirement is that the graph comes from the catalog, not from hardcoded
+knowledge. Two automated tests:
+
+- `src/graph.test.ts` builds a synthetic "acme" toolkit, then renames every slug,
+  entity and param (`ACME_`→`WIDGET_`, `Ticket`→`Sprocket`) and asserts the graph
+  is isomorphic and leaks no original name.
+- `src/catalog.test.ts` does the same to the real catalog (`GITHUB_`→`ACME_`,
+  `Issue`→`Ticket`, `PullRequest`→`Changeset`) and asserts the renamed
+  dependencies are still discovered.
+
+This is what caught the ambient-param bug: on the narrower renamed catalog,
+`ticket_number` crossed the frequency threshold and was misclassified as ambient
+context, silently deleting the toolkit's main dependency.
 
 ## Known limits
 
-- Entity matching is token-level, so sibling entities that share a word can cross
-  over: a `comment_id` from an issue comment may be offered to a commit-comment
-  tool. Same entity family, wrong member.
-- `tokenize` splits on camelCase, so `GitHubApp` becomes `git`/`hub`/`app`.
-  Harmless here because matching tolerates partial overlap, but it is imprecise.
-- No LLM is used. The rules above are deterministic and reproducible, and every
-  edge can be traced to a schema path. An LLM pass would most plausibly help by
-  adjudicating the low-confidence band (< 0.7) rather than by proposing edges.
+Ranked by how much they would bother me in production.
+
+**1. Cross-scope confusion — the main residual error class.** All five surviving
+false positives are of one kind: the entity matches but the *scope* does not.
+
+- a **team** invitation id offered where a **repository** invitation id is wanted
+- an **organization** secret name offered where an **environment** secret name is wanted
+- a `pull_number` sourced from `LIST_WORKFLOW_RUNS_FOR_A_REPOSITORY`, which does
+  embed `pull_requests[].number` but only for PR-triggered runs
+
+No token-level rule separates these from the true positives. `LIST_REPOSITORY_ISSUES`
+→ `CREATE_AN_ISSUE_COMMENT` has exactly the same shape — producer subject carries
+a qualifier the consumer lacks — and it is correct. Telling them apart requires
+knowing that a team invitation and a repository invitation are different kinds of
+thing, which is semantic knowledge, not structure. **This is the one place a
+language model would genuinely earn its cost**: adjudicating a few hundred
+candidate edges where entity matches but scope differs. It is not wired up
+(see below), and I would not ship it without measuring it against this labelled
+set first.
+
+**2. No runtime LLM pass.** The brief encourages one. I built the deterministic
+backbone and the measurement harness first, on the reasoning that an LLM pass you
+cannot score is not an improvement, just a cost. The eval set and the confidence
+band (`< 0.70`, currently 6 edges) are the hooks it would attach to. Honest
+status: not done, and the harness to judge it is in place.
+
+**3. Recall cost of dropping abbreviations.** `repo`→`repository` and
+`org`→`organization` no longer resolve. Harmless here because both are ambient
+context reported as `requires_from_user` rather than linked, but on a toolkit
+where an abbreviated noun is a real handle this would lose edges.
+
+**4. Token-level entity matching.** Sibling entities sharing a word can still
+cross over — a `comment_id` from an issue comment may be offered to a
+commit-comment tool. Same entity family, wrong member.
+
+**5. `tokenize` splits acronyms.** `GitHubApp` becomes `git`/`hub`/`app`.
+Harmless, because matching only requires every *requirement* token to be
+accounted for, but imprecise.
+
+**6. The labelled set is small and mine.** 26 edges, judged by one person from
+schemas rather than from running the API. It is enough to catch a systematic
+error class, not enough to certify a precision figure.
 
 ## Running it
 
