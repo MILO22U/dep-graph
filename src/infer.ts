@@ -71,6 +71,16 @@ export const ROLE_GROUPS: string[][] = [
   ["sha", "ref"],
 ];
 
+/**
+ * Property names that carry no entity meaning -- the Composio envelope and
+ * generic collection wrappers. Any other property name naming an object IS a
+ * usable entity hint (see the property-name fallback in `gives`).
+ */
+export const GENERIC_PROPERTY = new Set([
+  "data", "items", "item", "results", "result", "response",
+  "value", "values", "payload", "entries", "nodes", "edges",
+]);
+
 /** Title tokens that qualify a shape without naming a different entity. */
 export const TITLE_NOISE = new Set([
   "simple", "minimal", "full", "nullable", "public", "private", "base",
@@ -120,10 +130,15 @@ export function isEnvelopeTitle(title: string): boolean {
   return /(response|wrapper)$/i.test(title);
 }
 
+/** API version / maturity markers: "ProjectV2" is still a project. */
+const VERSION_TOKEN = /^(v\d+|\d+|beta|alpha|preview|legacy)$/;
+
 /** "SimpleUser" -> ["user"],  "PullRequest" -> ["pull","request"] */
 export function titleEntity(title: string): string[] {
   if (isEnvelopeTitle(title)) return [];
-  return tokenize(title).map(stem).filter((w) => !TITLE_NOISE.has(w));
+  return tokenize(title)
+    .map(stem)
+    .filter((w) => !TITLE_NOISE.has(w) && !VERSION_TOKEN.test(w));
 }
 
 /* ================================================================== *
@@ -192,6 +207,8 @@ export interface Produced {
   type?: string;
   /** Dotted path, for debugging and for showing provenance in the viz. */
   path: string;
+  /** How many collections deep. >1 means the value sits inside another list. */
+  depth: number;
 }
 
 export const MAX_DEPTH = 7;
@@ -252,9 +269,20 @@ export function gives(tool: Tool): Produced[] {
           field: field.toLowerCase(),
           type: typeof child?.type === "string" ? child.type : undefined,
           path: childPath,
+          depth: (childPath.match(/\[\]/g) ?? []).length,
         });
       } else {
-        walk(sub, ent, childPath, depth + 1, seen);
+        // If the nested shape has no title of its own, its property name is the
+        // best entity evidence available. Without this, CREATE_USER_LIST's
+        // `data.list.id` fell back to the slug subject [user, list] and was
+        // offered as a `user_id` -- it is a LIST id.
+        const childTitle = typeof child?.title === "string" ? child.title : "";
+        let childEnt = ent;
+        if (!childTitle && !GENERIC_PROPERTY.has(field.toLowerCase())) {
+          const hint = tokenize(field).map(stem).filter((w) => !TITLE_NOISE.has(w));
+          if (hint.length) childEnt = hint;
+        }
+        walk(sub, childEnt, childPath, depth + 1, seen);
       }
     }
   }
@@ -471,20 +499,28 @@ export async function buildGraph(tools: Tool[]): Promise<Graph> {
     path: string;
     /** Entity came from the tool's slug, not from a schema title -- weaker. */
     fromSubject: boolean;
+    /** How many collections deep the value sits. */
+    depth: number;
   }
   const byField = new Map<string, Candidate[]>();
 
   catalog.forEach((tool, index) => {
     const subject = subjectOf(tool);
-    const seen = new Set<string>();
+    const seen = new Map<string, number>();
     for (const p of gives(tool)) {
       const fromSubject = p.entity.length === 0;
       const entity = fromSubject ? subject : p.entity;
+      // The same (entity, field) is often reachable by several paths. Keep the
+      // SHALLOWEST, because that is the one the tool is really about -- keeping
+      // whichever came first made the depth test depend on property order.
       const key = p.field + "|" + entity.join(",");
-      if (seen.has(key)) continue; // same (entity, field) reached by many paths
-      seen.add(key);
+      const prior = seen.get(key);
+      if (prior !== undefined && prior <= p.depth) continue;
+      seen.set(key, p.depth);
       if (!byField.has(p.field)) byField.set(p.field, []);
-      byField.get(p.field)!.push({ tool: index, entity, type: p.type, path: p.path, fromSubject });
+      byField.get(p.field)!.push({
+        tool: index, entity, type: p.type, path: p.path, fromSubject, depth: p.depth,
+      });
     }
   });
 
@@ -500,6 +536,8 @@ export async function buildGraph(tools: Tool[]): Promise<Graph> {
     const consumerSlug = String(slugOf(consumer));
     const consumerService = serviceOf(consumer);
     const consumerParams = new Set(requiredParams(consumer).map((p) => p.name));
+    const consumerSubject = subjects[consumerIndex];
+    const consumerParamTokens = [...consumerParams].flatMap((n) => tokenize(n).map(stem));
     const unmet: string[] = [];
 
     for (const req of needs(consumer)) {
@@ -536,12 +574,28 @@ export async function buildGraph(tools: Tool[]): Promise<Graph> {
         for (const cand of byField.get(field) ?? []) {
           if (cand.tool === consumerIndex) continue; // no self-edges
 
+          // A value buried inside a SECOND collection is incidental to what the
+          // tool is for. `data.workflow_runs[].pull_requests[].number` is a real
+          // pull number, but "list workflow runs" is not how you find a PR to
+          // merge; likewise a vulnerable package name inside a security advisory
+          // is not an org package. Require such a match to be about the tool's
+          // own subject. Depth 1 is untouched, so `artifacts[].workflow_run.id`
+          // still supplies a run_id.
+          if (cand.depth > 1) {
+            if (!cand.entity.some((e) => subjects[cand.tool].some((s) => tokenHit(e, s)))) continue;
+          }
+
           // A bare-noun requirement ("give me something identifying a branch")
           // is the loosest kind we have, so demand that the producing tool is
           // actually *about* that noun. Without this, `content` on CREATE_A_BLOB
           // -- the file body you compose yourself -- matched a coincidental
           // `Content` entity inside project items.
           if (req.role === ANY_ROLE && !ambient) {
+            // It must be that entity exactly, not a more specific relative of it.
+            // A DeploymentBranchPolicy has a `name`, and every requirement token
+            // ("branch") is present in [deployment, branch, policy] -- but a
+            // policy name is a glob pattern, not a branch.
+            if (cand.entity.length !== req.entity.length) continue;
             if (!req.entity.some((e) => subjects[cand.tool].some((s) => tokenHit(e, s)))) continue;
             // A bare noun is our weakest requirement, so also insist the producer
             // is a retrieval tool. `assignee` was being sourced from
@@ -569,6 +623,37 @@ export async function buildGraph(tools: Tool[]): Promise<Graph> {
           // requirement matched on one stray token and took data.name -- which is
           // the package version's name, not a login.
           if (cand.fromSubject && subjects[cand.tool].length > req.entity.length + 1) continue;
+
+          // When the producer's entity is a MORE SPECIFIC compound than the
+          // requirement, the extra words must be corroborated by the consumer.
+          //
+          //   pull_number  <- PullRequest   extra "request", and the consumer
+          //                                 MERGE_A_PULL_REQUEST says "request"
+          //                                 -> a truncated name for one entity. keep.
+          //   user_id      <- UserList      extra "list", and the consumer
+          //                                 CREATE_VIEW_FOR_USER_PROJECT never
+          //                                 mentions a list -> different thing. drop.
+          //
+          // Structurally these are identical, so the consumer's own vocabulary is
+          // what separates them.
+          if (cand.entity.length > req.entity.length) {
+            const extra = cand.entity.filter((t) => !req.entity.some((r) => tokenHit(r, t)));
+            const vouched = extra.every(
+              (t) =>
+                consumerSubject.some((c) => tokenHit(t, c)) ||
+                consumerParamTokens.some((c) => tokenHit(t, c)),
+            );
+            // Or the requirement names the HEAD of the compound, in which case the
+            // extra words only narrow it and the thing is still of that kind:
+            //   project_id <- UserProject       head "project" -> still a project
+            //   user_login <- AuthenticatedUser head "user"    -> still a user
+            //   comment_id <- IssueComment      head "comment" -> still a comment
+            // but
+            //   user_id    <- UserList          head "list"    -> NOT a user
+            const head = cand.entity[cand.entity.length - 1];
+            const headIsWhatWeWant = req.entity.some((r) => tokenHit(r, head));
+            if (!headIsWhatWeWant && !vouched) continue;
+          }
 
           const entityFit = entityScore(req.entity, cand.entity);
           // "any identifying field of X" is only meaningful if it really is an X.
