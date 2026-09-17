@@ -9,7 +9,8 @@
     "build": "node --import tsx src/generate.ts github_catalog.json && node --import tsx src/visualize.ts",
     "test": "node --import tsx --test src/infer.test.ts src/graph.test.ts src/catalog.test.ts",
     "evaluate": "node --import tsx src/evaluate.ts",
-    "check": "npm run generate -- github_catalog.json && npm test && npm run evaluate"
+    "check": "npm run generate -- github_catalog.json && npm test && npm run evaluate",
+    "adjudicate": "node --import tsx src/adjudicate.ts"
   },
   "dependencies": {
     "openai": "^6.48.0"

@@ -49,6 +49,38 @@ export interface Graph {
   edges: Edge[];
 }
 
+/**
+ * What each identifier refers to, as named by the semantic layer.
+ * Key: "<produces|requires>|<param>|<TOOL_SLUG>", value: a snake_case kind such
+ * as "team_invitation". Produced by `src/adjudicate.ts` and cached in
+ * eval/kinds.json, so applying it needs no network. See that file for why.
+ */
+export type KindMap = Record<string, string>;
+
+export interface BuildOptions {
+  /** Semantic kinds; edges whose two sides name incompatible kinds are dropped. */
+  kinds?: KindMap;
+}
+
+/**
+ * Do two named kinds refer to the same sort of thing?
+ *
+ * Compared as token sets rather than strings, because the model may answer
+ * "repo_invitation" once and "repository_invitation" the next time. One side may
+ * be more specific ("issue" vs "repository_issue"); what is rejected is a
+ * genuine conflict, where each carries a qualifier the other does not.
+ */
+export function kindsCompatible(a: string, b: string): boolean {
+  if (!a || !b) return true; // unlabelled: structural rules stand alone
+  const at = tokenize(a).map(stem).filter((w) => !TITLE_NOISE.has(w));
+  const bt = tokenize(b).map(stem).filter((w) => !TITLE_NOISE.has(w));
+  if (!at.length || !bt.length) return true;
+  const aOnly = at.filter((t) => !bt.some((x) => tokenHit(t, x)));
+  const bOnly = bt.filter((t) => !at.some((x) => tokenHit(t, x)));
+  // one side a refinement of the other is fine; a clash on both sides is not
+  return aOnly.length === 0 || bOnly.length === 0;
+}
+
 export function slugOf(tool: Tool): string | undefined {
   return tool.slug ?? tool.name ?? tool.function?.name;
 }
@@ -455,7 +487,7 @@ export const AMBIENT_SHARE = 0.15;
  */
 export const LINK_AMBIENT_PARAMS = false;
 
-export async function buildGraph(tools: Tool[]): Promise<Graph> {
+export async function buildGraph(tools: Tool[], options: BuildOptions = {}): Promise<Graph> {
   const catalog = tools.filter((t) => slugOf(t));
 
   const nodes: Node[] = catalog.map((t) => ({
@@ -705,7 +737,17 @@ export async function buildGraph(tools: Tool[]): Promise<Graph> {
     if (unmet?.length) node.requires_from_user = unmet;
   }
 
-  edges.sort(
+  // ---- semantic layer: drop edges whose two sides name different kinds -----
+  const kinds = options.kinds;
+  const finalEdges = kinds
+    ? edges.filter((e) => {
+        const produced = kinds[`produces|${e.label}|${e.from}`];
+        const required = kinds[`requires|${e.label}|${e.to}`];
+        return kindsCompatible(produced, required);
+      })
+    : edges;
+
+  finalEdges.sort(
     (a, b) =>
       a.to.localeCompare(b.to) ||
       String(a.label).localeCompare(String(b.label)) ||
@@ -713,5 +755,5 @@ export async function buildGraph(tools: Tool[]): Promise<Graph> {
       a.from.localeCompare(b.from),
   );
 
-  return { nodes, edges };
+  return { nodes, edges: finalEdges };
 }

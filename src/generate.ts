@@ -10,7 +10,7 @@
  * DEBUG_TOOL=<SLUG> dumps what one tool needs and gives, then exits -- the
  * fastest way to see why a given edge does or does not exist.
  */
-import { readFileSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync } from "fs";
 import {
   buildGraph,
   gives,
@@ -18,8 +18,27 @@ import {
   serviceOf,
   slugOf,
   ROLE_WORDS,
+  type KindMap,
   type Tool,
 } from "./infer.ts";
+
+const KINDS_PATH = "eval/kinds.json";
+
+/**
+ * The semantic layer, if it has been generated. Read from a committed file, so
+ * the generator is deterministic and needs no API key -- refresh it with
+ * `npm run adjudicate`.
+ */
+function loadKinds(): KindMap | undefined {
+  if (!existsSync(KINDS_PATH)) return undefined;
+  try {
+    const k = JSON.parse(readFileSync(KINDS_PATH, "utf-8"));
+    return k && typeof k === "object" ? k : undefined;
+  } catch {
+    console.error(`ignoring unreadable ${KINDS_PATH}`);
+    return undefined;
+  }
+}
 
 const CATALOG_PATH = process.argv.length > 2 ? process.argv[process.argv.length - 1] : undefined;
 const OUT_PATH = "dependency_graph.json";
@@ -60,9 +79,13 @@ function debugOne(tools: Tool[], slug: string) {
 async function main() {
   const tools = loadCatalog();
   if (process.env.DEBUG_TOOL) return debugOne(tools, process.env.DEBUG_TOOL);
-  const graph = await buildGraph(tools);
+  const kinds = loadKinds();
+  const graph = await buildGraph(tools, { kinds });
   writeFileSync(OUT_PATH, JSON.stringify(graph, null, 2), "utf-8");
-  console.error("wrote " + graph.nodes.length + " nodes, " + graph.edges.length + " edges to " + OUT_PATH);
+  console.error(
+    "wrote " + graph.nodes.length + " nodes, " + graph.edges.length + " edges to " + OUT_PATH +
+    (kinds ? " (semantic layer: " + Object.keys(kinds).length + " kinds)" : " (no semantic layer)"),
+  );
 }
 
 main().catch((e) => {

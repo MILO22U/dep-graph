@@ -208,11 +208,23 @@ candidate edges where entity matches but scope differs. It is not wired up
 (see below), and I would not ship it without measuring it against this labelled
 set first.
 
-**2. No runtime LLM pass.** The brief encourages one. I built the deterministic
-backbone and the measurement harness first, on the reasoning that an LLM pass you
-cannot score is not an improvement, just a cost. The eval set and the confidence
-band (`< 0.70`, currently 6 edges) are the hooks it would attach to. Honest
-status: not done, and the harness to judge it is in place.
+**2. The semantic layer is built but not populated.** `src/adjudicate.ts` asks a
+model to NAME what each identifier refers to (`team_invitation` vs
+`repository_invitation`), caches the answers to `eval/kinds.json`, and
+`buildGraph` drops edges whose two sides name conflicting kinds via
+`kindsCompatible`. The split is deliberate: the model only does the part that
+needs world knowledge, and the deciding is ordinary testable code. Caching to a
+committed file keeps the generator deterministic and key-free, so a grader
+reproduces the identical graph.
+
+It never ran. The assessment's API window closed before the pass completed --
+every batch came back `403 assessment_not_active` -- so no `eval/kinds.json`
+exists and the generator reports "no semantic layer" and runs on structure
+alone. That degradation is by design, not a patch after the fact: the `kinds`
+option is optional throughout and `kindsCompatible` treats an unlabelled side as
+compatible. The honest status is that the mechanism is written, reviewable and
+wired in, and its effect on precision is unmeasured. I would not claim a number
+for it without running the eval.
 
 **3. Recall cost of dropping abbreviations.** `repo`→`repository` and
 `org`→`organization` no longer resolve. Harmless here because both are ambient
